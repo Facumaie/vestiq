@@ -203,6 +203,28 @@
     *{animation:none!important;transition:none!important}
   }
 
+  /* Garment inventory */
+  .gtitle{
+    margin-top:26px;font-family:'JetBrains Mono',monospace;font-size:11px;
+    letter-spacing:.24em;text-transform:uppercase;color:var(--brass);margin-bottom:12px;
+  }
+  .garments{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .gitem{
+    border:1px solid var(--line);border-radius:12px;padding:13px 10px;
+    background:var(--surface);text-align:center;position:relative;
+  }
+  .gitem .gk{
+    font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.18em;
+    text-transform:uppercase;color:var(--muted);
+  }
+  .gitem .gv{font-family:'Playfair Display',serif;font-size:17px;margin-top:6px}
+  .gitem.dim .gv{color:var(--muted);font-style:italic;font-size:14px}
+  .gitem.flag{border-color:var(--warn);background:rgba(216,154,91,.08)}
+  .gitem .gflag{
+    margin-top:6px;font-family:'JetBrains Mono',monospace;font-size:9px;
+    letter-spacing:.14em;text-transform:uppercase;color:var(--warn);
+  }
+
   /* Brand footer */
   .brand{
     margin-top:34px;padding-top:24px;border-top:1px solid var(--line);
@@ -278,6 +300,9 @@
       <p class="harmony-note" id="harmonyNote"></p>
     </div>
 
+    <div class="gtitle">Prendas detectadas</div>
+    <div class="garments" id="garments"></div>
+
     <div class="reads">
       <div class="read">
         <div class="k">Registro</div>
@@ -338,6 +363,7 @@ const els = {
   formalityRead: document.getElementById('formalityRead'),
   coordRead: document.getElementById('coordRead'),
   sugList: document.getElementById('sugList'),
+  garments: document.getElementById('garments'),
   work: document.getElementById('work'),
 };
 
@@ -346,12 +372,42 @@ let hasImage = false;
 let classifier = null;
 
 /* ---------- preset concepts (CLIP prompts in English; display in Spanish) ---------- */
-const FORMALITY = [
-  { p:"a person dressed in formal elegant clothing such as a suit or a gown", es:"Formal / elegante" },
-  { p:"a person in smart business casual office attire", es:"Business casual" },
-  { p:"a person in relaxed casual everyday clothing", es:"Casual diario" },
-  { p:"a person wearing athletic sportswear or gym clothes", es:"Deportivo" },
-  { p:"a person in loungewear or pajamas at home", es:"Estar por casa" },
+/* Per-garment label sets. f = formality rank: 0 muy informal .. 3 formal */
+const GARMENTS = {
+  top: { es:"Arriba", items:[
+    { p:"a person wearing a plain casual t-shirt", es:"Remera", f:1 },
+    { p:"a person wearing a button-up collared dress shirt", es:"Camisa", f:3 },
+    { p:"a person wearing a knit sweater or pullover", es:"Sweater", f:2 },
+    { p:"a person wearing a hoodie or sweatshirt", es:"Buzo", f:0 },
+    { p:"a person wearing a blazer or tailored suit jacket", es:"Saco / blazer", f:3 },
+    { p:"a person wearing a sleeveless tank top", es:"Musculosa", f:0 },
+    { p:"a person wearing a polo shirt", es:"Chomba", f:2 },
+  ]},
+  bottom: { es:"Abajo", items:[
+    { p:"a person wearing blue denim jeans", es:"Jean", f:1 },
+    { p:"a person wearing formal tailored dress trousers", es:"Pantalón de vestir", f:3 },
+    { p:"a person wearing chino pants", es:"Chino", f:2 },
+    { p:"a person wearing casual shorts", es:"Short", f:1 },
+    { p:"a person wearing a skirt", es:"Pollera", f:2 },
+    { p:"a person wearing sweatpants or joggers", es:"Jogging", f:0 },
+    { p:"a person wearing athletic leggings", es:"Calza", f:0 },
+  ]},
+  footwear: { es:"Pies", items:[
+    { p:"a person wearing casual sneakers", es:"Zapatillas", f:1 },
+    { p:"a person wearing formal leather dress shoes", es:"Zapatos", f:3 },
+    { p:"a person wearing boots", es:"Botas", f:2 },
+    { p:"a person wearing sandals or flip flops", es:"Sandalias", f:0 },
+    { p:"a person wearing high heels", es:"Tacos", f:3 },
+    { p:"a person wearing leather loafers", es:"Mocasines", f:2 },
+  ]},
+};
+/* Average formality (0..3) -> registro label */
+const REGISTRO = [
+  { min:2.5, es:"Formal / elegante" },
+  { min:1.8, es:"Business casual" },
+  { min:1.0, es:"Casual diario" },
+  { min:0.4, es:"Sport casual" },
+  { min:-1,  es:"Muy informal" },
 ];
 const COORD = [
   { key:"well", p:"a stylish, well coordinated outfit with colors that match nicely" },
@@ -466,15 +522,30 @@ async function runAnalysis(){
         }
       });
     }
-    setProg(78, "Leyendo prendas y registro…");
     const imgUrl = els.photo.dataset.url;
 
-    const fRes = await classifier(imgUrl, FORMALITY.map(f=>f.p));
-    setProg(90, "Evaluando coordinación…");
+    const detect = async (cat) => {
+      const set = GARMENTS[cat];
+      const res = await classifier(imgUrl, set.items.map(x=>x.p));
+      const best = res[0];
+      const item = set.items.find(x=>x.p===best.label);
+      const margin = best.score - (res[1]?.score || 0);
+      return { cat, es:item.es, f:item.f, score:best.score, margin,
+               confident: best.score>=0.28 && margin>=0.05 };
+    };
+
+    setProg(74, "Mirando la parte de arriba…");
+    const topG = await detect('top');
+    setProg(82, "Mirando la parte de abajo…");
+    const botG = await detect('bottom');
+    setProg(89, "Mirando el calzado…");
+    const shoeG = await detect('footwear');
+    setProg(95, "Evaluando coordinación…");
     const cRes = await classifier(imgUrl, COORD.map(c=>c.p));
 
     setProg(100, "Listo");
-    const report = buildReport(palette, fRes, cRes);
+    const garments = { top:topG, bottom:botG, footwear:shoeG };
+    const report = buildReport(palette, garments, cRes);
     render(report, palette);
   }catch(err){
     setProg(100, "No se pudo cargar el modelo");
@@ -542,7 +613,18 @@ function extractPalette(srcCanvas){
 }
 
 /* ---------- rule engine ---------- */
-function buildReport(palette, fRes, cRes){
+function registroSwap(g, raise){
+  const T = {
+    top:     { up:"una camisa o un sweater", down:"una remera o un buzo" },
+    bottom:  { up:"un chino o un pantalón de vestir", down:"un jean o algo más relajado" },
+    footwear:{ up:"unos zapatos o mocasines", down:"unas zapatillas prolijas" },
+  };
+  const zona = { top:"la parte de arriba", bottom:"la parte de abajo", footwear:"el calzado" }[g.cat];
+  const dir = raise ? "desentona por informal frente al resto" : "queda demasiado formal para lo relajado del resto";
+  return `El registro no cierra: ${g.es.toLowerCase()} en ${zona} ${dir}. Cambialo por ${raise?T[g.cat].up:T[g.cat].down} para emparejar el nivel.`;
+}
+
+function buildReport(palette, garments, cRes){
   // --- color harmony ---
   const chroma = palette.filter(c=>!c.neutral);
   const hues = chroma.map(c=>c.h);
@@ -586,28 +668,46 @@ function buildReport(palette, fRes, cRes){
     }
   }
 
-  // --- CLIP reads ---
-  let formalityEs="—", coordWord="—", coordScore=70, coordKey="mid";
-  if(fRes){
-    const topF = fRes[0];
-    const match = FORMALITY.find(f=>f.p===topF.label);
-    formalityEs = match ? match.es : "—";
+  // --- garment inventory & registro ---
+  const detected = garments ? [garments.top, garments.bottom, garments.footwear].filter(Boolean) : [];
+  const conf = detected.filter(g=>g.confident);
+  let registroEs="—", regAvg=null;
+  if(conf.length){
+    regAvg = conf.reduce((s,g)=>s+g.f,0)/conf.length;
+    registroEs = (REGISTRO.find(b=>regAvg>=b.min) || REGISTRO[REGISTRO.length-1]).es;
   }
+
+  // registro coherence: the garment that breaks the register
+  let registroNote=null, outlier=null, coherenceScore=80;
+  if(conf.length>=2){
+    const fs = conf.map(g=>g.f).sort((a,b)=>a-b);
+    const spread = fs[fs.length-1]-fs[0];
+    const med = fs[Math.floor(fs.length/2)];
+    if(spread>=2){
+      let best=-1;
+      conf.forEach(g=>{ const d=Math.abs(g.f-med); if(d>best){best=d; outlier=g;} });
+      coherenceScore = 52;
+      registroNote = registroSwap(outlier, outlier.f < med);
+    } else {
+      coherenceScore = 86;
+    }
+  }
+
+  // --- coordination (CLIP) ---
+  let coordWord="—", coordScore=70, coordKey="mid";
   if(cRes){
-    const map={}; cRes.forEach(r=>{
-      const k=COORD.find(c=>c.p===r.label)?.key; if(k) map[k]=r.score;
-    });
+    const map={}; cRes.forEach(r=>{ const k=COORD.find(c=>c.p===r.label)?.key; if(k) map[k]=r.score; });
     const well=map.well||0, mid=map.mid||0, bad=map.bad||0;
-    coordScore = Math.round(100*(well + 0.5*mid));
-    coordScore = Math.max(0,Math.min(100,coordScore));
+    coordScore = Math.max(0,Math.min(100, Math.round(100*(well+0.5*mid))));
     if(well>=bad && well>=mid){ coordWord="Coordinado"; coordKey="well"; }
     else if(bad>well){ coordWord="Descoordinado"; coordKey="bad"; }
     else { coordWord="Neutra"; coordKey="mid"; }
   }
+  const hadModel = !!cRes;
 
-  // --- final score ---
-  const finalScore = fRes
-    ? Math.round(0.55*harmonyScore + 0.45*coordScore)
+  // --- final score: color harmony + coordination + register coherence ---
+  const finalScore = hadModel
+    ? Math.round(0.42*harmonyScore + 0.33*coordScore + 0.25*coherenceScore)
     : Math.round(harmonyScore);
 
   // --- verdict ---
@@ -617,31 +717,38 @@ function buildReport(palette, fRes, cRes){
   else if(finalScore>=52){ verdict="Mejorable"; verdictSub="Funciona, pero hay decisiones que le restan cohesión."; }
   else { verdict="Hay choques para resolver"; verdictSub="Conviene rearmar la combinación antes de salir."; }
 
-  // --- suggestions ---
+  // --- suggestions (garment swaps first, then color) ---
   const sugs=[];
+  if(registroNote){ sugs.push(registroNote); }
   if(clashPair){
-    sugs.push(`Pasá uno de los dos —${clashPair[0].name} o ${clashPair[1].name}— a un neutro (negro, gris, blanco o beige), o dejalo solo como accesorio chico para que no compitan.`);
+    sugs.push(`En color, el ${clashPair[0].name} y el ${clashPair[1].name} compiten: pasá uno a un neutro (negro, gris, blanco o beige) o reducilo a un accesorio chico.`);
   }
   if(harmonyType==="Policromática"){
-    sugs.push("Elegí un color como protagonista y bajá los demás a neutros. La regla práctica: un dominante, un secundario y un acento, no tres iguales.");
+    sugs.push("Tenés tres o más colores fuertes. Elegí uno como protagonista y bajá los demás a neutros: un dominante, un secundario y un acento.");
   }
   if(harmonyType==="Análoga"){
-    sugs.push("La base análoga ya está lograda; un único accesorio en un tono más frío o cálido le da el punto de contraste sin romper la armonía.");
+    sugs.push("La base de color análoga ya está lograda; un único accesorio en un tono más frío o cálido le da contraste sin romperla.");
   }
-  if((harmonyType==="Monocromática"||harmonyType==="Neutra total")){
-    sugs.push("Base muy segura. Si querés que destaque, sumá una sola pieza de color (medias, cinturón, bufanda) como acento puntual.");
+  if(harmonyType==="Monocromática"||harmonyType==="Neutra total"){
+    sugs.push("Base de color muy segura. Si querés que destaque, sumá una sola pieza de color como acento (medias, cinturón, bufanda).");
   }
-  if(coordKey==="bad" && !clashPair){
-    sugs.push("La lectura general da algo descoordinada aunque la paleta no choque: suele ser tema de proporciones o de mezclar registros. Probá unificar el nivel de las prendas.");
+  if(coordKey==="bad" && !registroNote && !clashPair){
+    sugs.push("La lectura da algo descoordinada sin un choque puntual: suele ser proporción. Probá ajustar el calce — ajustado arriba u holgado abajo, no las dos cosas a la vez.");
   }
-  if(formalityEs==="Deportivo" || formalityEs==="Estar por casa"){
-    sugs.push(`Registro «${formalityEs.toLowerCase()}»: perfecto para informal. Si el plan pide algo más arreglado, reemplazá la pieza más relajada (calzado o pantalón) por una de mayor formalidad.`);
+  if(hadModel && conf.length<2){
+    sugs.push("No distinguí bien todas las prendas. Para sugerencias de cambio más finas, probá una foto de cuerpo entero, con buena luz y fondo liso.");
   }
   if(sugs.length===0){
     sugs.push("Sin ajustes urgentes. Si querés afinar, cuidá que el calzado dialogue con el tono dominante del outfit.");
   }
 
-  return { finalScore, verdict, verdictSub, harmonyType, harmonyNote, formalityEs, coordWord, suggestions:sugs.slice(0,4), hadModel:!!fRes };
+  return {
+    finalScore, verdict, verdictSub, harmonyType, harmonyNote,
+    registroEs, coordWord, registroNote,
+    outlierCat: outlier ? outlier.cat : null,
+    garments: garments || null,
+    suggestions:sugs.slice(0,4), hadModel
+  };
 }
 
 /* ---------- render ---------- */
@@ -651,8 +758,9 @@ function render(r, palette){
   els.verdictSub.textContent = r.verdictSub;
   els.harmonyTag.textContent = "Armonía · " + r.harmonyType;
   els.harmonyNote.innerHTML = "<b>" + r.harmonyType + ".</b> " + r.harmonyNote;
-  els.formalityRead.textContent = r.hadModel ? r.formalityEs : "n/d";
+  els.formalityRead.textContent = r.hadModel ? r.registroEs : "n/d";
   els.coordRead.textContent = r.hadModel ? r.coordWord : "solo color";
+  renderGarments(r.garments, r.outlierCat);
 
   // swatches sized by share
   els.swatches.innerHTML = "";
@@ -684,6 +792,23 @@ function render(r, palette){
 
   els.results.classList.add('show');
   els.results.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+/* ---------- garment inventory render ---------- */
+function renderGarments(g, outlierCat){
+  els.garments.innerHTML="";
+  if(!g){ els.garments.style.display="none"; return; }
+  els.garments.style.display="grid";
+  const zonas={top:"Arriba",bottom:"Abajo",footwear:"Pies"};
+  ['top','bottom','footwear'].forEach(cat=>{
+    const item=g[cat];
+    const ok=item && item.confident;
+    const div=document.createElement('div');
+    div.className='gitem'+(ok?'':' dim')+(cat===outlierCat?' flag':'');
+    div.innerHTML=`<div class="gk">${zonas[cat]}</div><div class="gv">${ok?item.es:'no claro'}</div>`+
+                  (cat===outlierCat?'<div class="gflag">desentona</div>':'');
+    els.garments.appendChild(div);
+  });
 }
 
 /* ---------- color utils ---------- */
