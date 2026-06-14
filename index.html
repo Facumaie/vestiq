@@ -210,6 +210,22 @@
     *{animation:none!important;transition:none!important}
   }
 
+  /* Occasion selector */
+  .occ-block{margin-top:16px}
+  .occ-label{
+    font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--muted);margin-bottom:10px;
+  }
+  .occ-label span{text-transform:none;letter-spacing:0;opacity:.7}
+  .occasions{display:flex;flex-wrap:wrap;gap:8px}
+  .occ{
+    appearance:none;border:1px solid var(--line);background:transparent;
+    color:var(--muted);font-family:'Inter',sans-serif;font-size:13.5px;
+    padding:8px 14px;border-radius:999px;cursor:pointer;transition:.15s;
+  }
+  .occ:hover{border-color:var(--brass);color:var(--ivory)}
+  .occ.active{background:var(--brass);color:#241803;border-color:var(--brass);font-weight:600}
+
   /* Garment inventory */
   .gtitle{
     margin-top:26px;font-family:'JetBrains Mono',monospace;font-size:11px;
@@ -275,6 +291,11 @@
     </div>
   </div>
   <div class="hint" id="hint">Listo para empezar</div>
+
+  <div class="occ-block">
+    <div class="occ-label">¿Para qué ocasión? <span>(opcional, afina las sugerencias)</span></div>
+    <div class="occasions" id="occasions"></div>
+  </div>
 
   <div class="controls">
     <button class="btn ghost" id="liveBtn"><span class="ic">◉</span> Cámara en vivo</button>
@@ -422,6 +443,32 @@ const COORD = [
   { key:"mid",  p:"an average everyday outfit, neither great nor bad" },
   { key:"bad",  p:"a mismatched outfit with clashing colors that do not go together" },
 ];
+/* Occasions -> target formality level (0..3). 'none' = no target, use internal coherence */
+const OCCASIONS = [
+  { id:'none',   es:'Sin ocasión',    target:null },
+  { id:'gym',    es:'Gym',            target:0.3 },
+  { id:'casual', es:'Salida casual',  target:1.4 },
+  { id:'work',   es:'Trabajo',        target:2.2 },
+  { id:'formal', es:'Formal',         target:3.0 },
+];
+let occasionTarget = null, occasionEs = null;
+
+function buildOccasions(){
+  const box = document.getElementById('occasions');
+  if(!box) return;
+  OCCASIONS.forEach(o=>{
+    const b=document.createElement('button');
+    b.className='occ'+(o.id==='none'?' active':'');
+    b.type='button'; b.textContent=o.es;
+    b.addEventListener('click', ()=>{
+      [...box.children].forEach(c=>c.classList.remove('active'));
+      b.classList.add('active');
+      occasionTarget = o.target;
+      occasionEs = (o.target!==null) ? o.es : null;
+    });
+    box.appendChild(b);
+  });
+}
 
 /* ---------- camera ---------- */
 els.liveBtn.addEventListener('click', async () => {
@@ -555,13 +602,13 @@ async function runAnalysis(){
 
     setProg(100, "Listo");
     const garments = { top:topG, bottom:botG, footwear:shoeG };
-    const report = buildReport(palette, garments, cRes);
+    const report = buildReport(palette, garments, cRes, occasionTarget, occasionEs);
     render(report, palette);
   }catch(err){
     setProg(100, "No se pudo cargar el modelo");
     console.error(err);
     // fallback: color-only report
-    const report = buildReport(palette, null, null);
+    const report = buildReport(palette, null, null, occasionTarget, occasionEs);
     render(report, palette);
     setHint("Sin conexión para el modelo: te muestro el análisis de color local.");
   }finally{
@@ -666,18 +713,33 @@ function extractPalette(srcCanvas){
 }
 
 /* ---------- rule engine ---------- */
-function registroSwap(g, raise){
-  const T = {
-    top:     { up:"una camisa o un sweater", down:"una remera o un buzo" },
-    bottom:  { up:"un chino o un pantalón de vestir", down:"un jean o algo más relajado" },
-    footwear:{ up:"unos zapatos o mocasines", down:"unas zapatillas prolijas" },
-  };
-  const zona = { top:"la parte de arriba", bottom:"la parte de abajo", footwear:"el calzado" }[g.cat];
-  const dir = raise ? "desentona por informal frente al resto" : "queda demasiado formal para lo relajado del resto";
-  return `El registro no cierra: ${g.es.toLowerCase()} en ${zona} ${dir}. Cambialo por ${raise?T[g.cat].up:T[g.cat].down} para emparejar el nivel.`;
+/* Concrete garment to aim for, by category and target formality level (0..3) */
+const SWAP_BY_LEVEL = {
+  top:     {0:"una remera o un buzo", 1:"una remera lisa o una chomba", 2:"una camisa o un sweater", 3:"una camisa o un saco"},
+  bottom:  {0:"un jogging cómodo",    1:"un jean o un short",           2:"un chino o un jean oscuro", 3:"un pantalón de vestir"},
+  footwear:{0:"zapatillas o sandalias",1:"unas zapatillas prolijas",    2:"unas botas o mocasines",    3:"unos zapatos de vestir"},
+};
+const ZONA = { top:"la parte de arriba", bottom:"la parte de abajo", footwear:"el calzado" };
+
+function cap(s){ return s.charAt(0).toUpperCase()+s.slice(1); }
+
+// dominant tone to anchor a replacement color
+function colorAnchor(palette){
+  const chroma = palette.filter(c=>!c.neutral).sort((a,b)=>b.share-a.share);
+  return chroma.length ? ("tu "+chroma[0].name) : "tu base neutra";
 }
 
-function buildReport(palette, garments, cRes){
+// Build a specific swap suggestion: which garment, why, what to wear instead, in what color
+function swapSuggestion(g, targetLevel, palette, occasionEs, tooCasual){
+  const lvl = Math.max(0, Math.min(3, Math.round(targetLevel)));
+  const target = SWAP_BY_LEVEL[g.cat][lvl];
+  const ctx = occasionEs ? ` para ${occasionEs.toLowerCase()}` : "";
+  const why = tooCasual ? "queda demasiado informal" : "queda demasiado formal";
+  const colorTip = ` Buscalo en un neutro (negro, gris o azul oscuro) que acompañe ${colorAnchor(palette)}.`;
+  return `${cap(g.es)}${ctx} ${why}: cambiá ${ZONA[g.cat]} por ${target}.${colorTip}`;
+}
+
+function buildReport(palette, garments, cRes, occasionTarget=null, occasionEs=null){
   // --- color harmony ---
   const chroma = palette.filter(c=>!c.neutral);
   const hues = chroma.map(c=>c.h);
@@ -730,19 +792,39 @@ function buildReport(palette, garments, cRes){
     registroEs = (REGISTRO.find(b=>regAvg>=b.min) || REGISTRO[REGISTRO.length-1]).es;
   }
 
-  // registro coherence: the garment that breaks the register
-  let registroNote=null, outlier=null, coherenceScore=80;
-  if(conf.length>=2){
-    const fs = conf.map(g=>g.f).sort((a,b)=>a-b);
-    const spread = fs[fs.length-1]-fs[0];
-    const med = fs[Math.floor(fs.length/2)];
-    if(spread>=2){
-      let best=-1;
-      conf.forEach(g=>{ const d=Math.abs(g.f-med); if(d>best){best=d; outlier=g;} });
-      coherenceScore = 52;
-      registroNote = registroSwap(outlier, outlier.f < med);
-    } else {
-      coherenceScore = 86;
+  // registro coherence + garment-change suggestions
+  let coherenceScore = 80;
+  const outlierCats = [];
+  const swaps = [];   // concrete "change this garment" suggestions
+
+  if(conf.length){
+    if(occasionTarget !== null && occasionTarget !== undefined){
+      // judge every garment against the chosen occasion's target level
+      conf.forEach(g=>{
+        const diff = g.f - occasionTarget;
+        if(Math.abs(diff) >= 1.2){
+          outlierCats.push(g.cat);
+          swaps.push(swapSuggestion(g, occasionTarget, palette, occasionEs, diff < 0));
+        }
+      });
+      const dev = conf.reduce((s,g)=>s+Math.abs(g.f-occasionTarget),0)/conf.length;
+      coherenceScore = Math.max(35, Math.round(92 - dev*22));
+    } else if(conf.length>=2){
+      // no occasion: flag whatever breaks the internal register (can be more than one)
+      const fs = conf.map(g=>g.f).sort((a,b)=>a-b);
+      const spread = fs[fs.length-1]-fs[0];
+      const med = fs[Math.floor(fs.length/2)];
+      if(spread>=2){
+        coherenceScore = 52;
+        conf.forEach(g=>{
+          if(Math.abs(g.f-med) >= 2){
+            outlierCats.push(g.cat);
+            swaps.push(swapSuggestion(g, med, palette, null, g.f < med));
+          }
+        });
+      } else {
+        coherenceScore = 86;
+      }
     }
   }
 
@@ -769,10 +851,11 @@ function buildReport(palette, garments, cRes){
   else if(finalScore>=68){ verdict="Combinación sólida"; verdictSub="Va bien encaminado, con uno o dos ajustes finos."; }
   else if(finalScore>=52){ verdict="Mejorable"; verdictSub="Funciona, pero hay decisiones que le restan cohesión."; }
   else { verdict="Hay choques para resolver"; verdictSub="Conviene rearmar la combinación antes de salir."; }
+  if(occasionEs && swaps.length){ verdictSub = `Para ${occasionEs.toLowerCase()} hay ${swaps.length>1?'prendas':'una prenda'} que no acompañan. Mirá los cambios.`; }
 
   // --- suggestions (garment swaps first, then color) ---
   const sugs=[];
-  if(registroNote){ sugs.push(registroNote); }
+  swaps.forEach(s=>sugs.push(s));
   if(clashPair){
     sugs.push(`En color, el ${clashPair[0].name} y el ${clashPair[1].name} compiten: pasá uno a un neutro (negro, gris, blanco o beige) o reducilo a un accesorio chico.`);
   }
@@ -785,7 +868,7 @@ function buildReport(palette, garments, cRes){
   if(harmonyType==="Monocromática"||harmonyType==="Neutra total"){
     sugs.push("Base de color muy segura. Si querés que destaque, sumá una sola pieza de color como acento (medias, cinturón, bufanda).");
   }
-  if(coordKey==="bad" && !registroNote && !clashPair){
+  if(coordKey==="bad" && !swaps.length && !clashPair){
     sugs.push("La lectura da algo descoordinada sin un choque puntual: suele ser proporción. Probá ajustar el calce — ajustado arriba u holgado abajo, no las dos cosas a la vez.");
   }
   if(hadModel && conf.length<2){
@@ -797,8 +880,8 @@ function buildReport(palette, garments, cRes){
 
   return {
     finalScore, verdict, verdictSub, harmonyType, harmonyNote,
-    registroEs, coordWord, registroNote,
-    outlierCat: outlier ? outlier.cat : null,
+    registroEs, coordWord,
+    outlierCats,
     garments: garments || null,
     suggestions:sugs.slice(0,4), hadModel
   };
@@ -813,7 +896,7 @@ function render(r, palette){
   els.harmonyNote.innerHTML = "<b>" + r.harmonyType + ".</b> " + r.harmonyNote;
   els.formalityRead.textContent = r.hadModel ? r.registroEs : "n/d";
   els.coordRead.textContent = r.hadModel ? r.coordWord : "solo color";
-  renderGarments(r.garments, r.outlierCat);
+  renderGarments(r.garments, r.outlierCats);
 
   // swatches sized by share
   els.swatches.innerHTML = "";
@@ -848,18 +931,20 @@ function render(r, palette){
 }
 
 /* ---------- garment inventory render ---------- */
-function renderGarments(g, outlierCat){
+function renderGarments(g, outlierCats){
   els.garments.innerHTML="";
   if(!g){ els.garments.style.display="none"; return; }
   els.garments.style.display="grid";
+  const flagged = new Set(outlierCats || []);
   const zonas={top:"Arriba",bottom:"Abajo",footwear:"Pies"};
   ['top','bottom','footwear'].forEach(cat=>{
     const item=g[cat];
     const ok=item && item.confident;
+    const isFlag = flagged.has(cat);
     const div=document.createElement('div');
-    div.className='gitem'+(ok?'':' dim')+(cat===outlierCat?' flag':'');
+    div.className='gitem'+(ok?'':' dim')+(isFlag?' flag':'');
     div.innerHTML=`<div class="gk">${zonas[cat]}</div><div class="gv">${ok?item.es:'no claro'}</div>`+
-                  (cat===outlierCat?'<div class="gflag">desentona</div>':'');
+                  (isFlag?'<div class="gflag">cambiar</div>':'');
     els.garments.appendChild(div);
   });
 }
@@ -910,6 +995,7 @@ function colorName(hsl){
   return "rojo";
 }
 
+buildOccasions();
 setHint("Listo para empezar");
 </script>
 <script>
