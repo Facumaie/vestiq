@@ -404,7 +404,7 @@
 <canvas id="work" style="display:none"></canvas>
 
 <script type="module">
-import { pipeline, CLIPModel, AutoProcessor, AutoTokenizer, RawImage, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+import { pipeline, CLIPVisionModelWithProjection, CLIPTextModelWithProjection, AutoProcessor, AutoTokenizer, RawImage, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
 env.allowLocalModels = false;
 
 /* ---------- elements ---------- */
@@ -684,24 +684,26 @@ function setProg(pct, txt){
 const CLIP_ID = 'Xenova/clip-vit-base-patch32';
 
 async function loadClip(progress_callback){
-  const model     = await CLIPModel.from_pretrained(CLIP_ID, { progress_callback });
-  const processor = await AutoProcessor.from_pretrained(CLIP_ID, { progress_callback });
-  const tokenizer = await AutoTokenizer.from_pretrained(CLIP_ID, { progress_callback });
-  return { model, processor, tokenizer };
+  // Modelos dedicados: su forward devuelve directamente image_embeds / text_embeds.
+  // (CLIPModel.get_*_features no existe en transformers.js, por eso fallaba antes.)
+  const visionModel = await CLIPVisionModelWithProjection.from_pretrained(CLIP_ID, { progress_callback });
+  const textModel   = await CLIPTextModelWithProjection.from_pretrained(CLIP_ID, { progress_callback });
+  const processor   = await AutoProcessor.from_pretrained(CLIP_ID, { progress_callback });
+  const tokenizer   = await AutoTokenizer.from_pretrained(CLIP_ID, { progress_callback });
+  return { visionModel, textModel, processor, tokenizer };
 }
 
 async function imageEmbed(c, imgUrl){
   const image  = await RawImage.read(imgUrl);
   const inputs = await c.processor(image);
-  const out    = await c.model.get_image_features(inputs);
-  const t = out && out.data ? out : (out.image_embeds || out.pooler_output || out);
-  return normVec(Array.from(t.data));
+  const { image_embeds } = await c.visionModel(inputs);
+  return normVec(Array.from(image_embeds.data));
 }
 
 async function textEmbeds(c, prompts){
   const tok = c.tokenizer(prompts, { padding:true, truncation:true });
-  const out = await c.model.get_text_features(tok);
-  const t = out && out.data ? out : (out.text_embeds || out);
+  const { text_embeds } = await c.textModel(tok);
+  const t = text_embeds;
   const N = t.dims[0], D = t.dims[1], arr = Array.from(t.data), vecs = [];
   for(let i=0;i<N;i++) vecs.push(normVec(arr.slice(i*D, (i+1)*D)));
   return vecs;
