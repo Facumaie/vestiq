@@ -210,6 +210,36 @@
     *{animation:none!important;transition:none!important}
   }
 
+  /* Result banner (color-only / errors) */
+  .banner{
+    border:1px solid var(--warn);background:rgba(216,154,91,.10);
+    border-radius:12px;padding:14px 16px;margin-bottom:22px;
+    font-size:13.5px;line-height:1.55;color:var(--ivory);
+  }
+  .banner b{color:var(--warn)}
+  .banner .berr{display:inline-block;margin-top:6px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);word-break:break-word}
+
+  .read .rsub{margin-top:6px;font-size:11.5px;color:var(--muted);line-height:1.35}
+
+  /* v3: color por prenda */
+  .pg-block{margin-top:26px;padding-top:22px;border-top:1px solid var(--line)}
+  .pg-btn{flex:0 0 auto;width:100%}
+  .pg-btn .beta{
+    font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--brass);border:1px solid var(--brass);
+    border-radius:6px;padding:1px 5px;margin-left:4px;
+  }
+  .perGarment{margin-top:18px}
+  .pg-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
+  .pg-item{text-align:center}
+  .pg-chip{height:62px;border-radius:10px;border:1px solid var(--line)}
+  .pg-k{margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+  .pg-v{margin-top:3px;font-size:12.5px;color:var(--ivory)}
+  .pg-note{font-size:14px;color:var(--muted);margin-top:4px}
+  .pg-note b{color:var(--ivory)}
+  .pg-clash{font-size:14px;color:var(--ivory);margin-top:10px;padding-left:14px;border-left:2px solid var(--warn)}
+  .pg-empty{font-size:13.5px;color:var(--muted);line-height:1.5}
+
   /* Occasion selector */
   .occ-block{margin-top:16px}
   .occ-label{
@@ -310,6 +340,7 @@
   </div>
 
   <section class="results" id="results">
+    <div class="banner" id="banner" style="display:none"></div>
     <div class="verdict">
       <div class="txt">
         <div class="vlabel">Veredicto</div>
@@ -328,23 +359,30 @@
       <p class="harmony-note" id="harmonyNote"></p>
     </div>
 
-    <div class="gtitle">Prendas detectadas</div>
+    <div class="gtitle" id="gtitle">Prendas detectadas</div>
     <div class="garments" id="garments"></div>
 
     <div class="reads">
       <div class="read">
         <div class="k">Registro</div>
         <div class="v" id="formalityRead">—</div>
+        <div class="rsub">qué tan formal es el conjunto</div>
       </div>
       <div class="read">
         <div class="k">Coordinación</div>
         <div class="v" id="coordRead">—</div>
+        <div class="rsub">lectura general del armado</div>
       </div>
     </div>
 
     <div class="sugs">
       <h3>Qué ajustaría</h3>
       <div id="sugList"></div>
+    </div>
+
+    <div class="pg-block">
+      <button class="btn ghost pg-btn" id="perGarmentBtn"><span class="ic">◐</span> Color por prenda <span class="beta">beta</span></button>
+      <div class="perGarment" id="perGarment" style="display:none"></div>
     </div>
 
     <p class="disclaimer">
@@ -364,7 +402,7 @@
 <canvas id="work" style="display:none"></canvas>
 
 <script type="module">
-import { CLIPModel, AutoProcessor, AutoTokenizer, RawImage, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+import { pipeline, CLIPModel, AutoProcessor, AutoTokenizer, RawImage, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
 env.allowLocalModels = false;
 
 /* ---------- elements ---------- */
@@ -392,6 +430,10 @@ const els = {
   coordRead: document.getElementById('coordRead'),
   sugList: document.getElementById('sugList'),
   garments: document.getElementById('garments'),
+  gtitle: document.getElementById('gtitle'),
+  banner: document.getElementById('banner'),
+  perGarmentBtn: document.getElementById('perGarmentBtn'),
+  perGarment: document.getElementById('perGarment'),
   work: document.getElementById('work'),
 };
 
@@ -399,6 +441,8 @@ let stream = null;
 let hasImage = false;
 let clip = null;
 let textCache = null;
+let segmenter = null;
+let lastImgUrl = null;
 
 /* ---------- preset concepts (CLIP prompts in English; display in Spanish) ---------- */
 /* Per-garment label sets. f = formality rank: 0 muy informal .. 3 formal */
@@ -565,8 +609,10 @@ async function runAnalysis(){
   const palette = extractPalette(els.work);
 
   // 2) CLIP (single image embedding reused across all label sets)
+  let modelError = null;
   try{
     const imgUrl = els.photo.dataset.url;
+    lastImgUrl = imgUrl;
 
     // load model once
     if (!clip){
@@ -603,14 +649,15 @@ async function runAnalysis(){
     setProg(100, "Listo");
     const garments = { top:topG, bottom:botG, footwear:shoeG };
     const report = buildReport(palette, garments, cRes, occasionTarget, occasionEs);
-    render(report, palette);
+    render(report, palette, null);
   }catch(err){
-    setProg(100, "No se pudo cargar el modelo");
+    setProg(100, "Sin modelo de prendas");
     console.error(err);
-    // fallback: color-only report
+    modelError = (err && err.message) ? err.message : String(err);
+    // fallback: color-only report, with a clear on-screen explanation
     const report = buildReport(palette, null, null, occasionTarget, occasionEs);
-    render(report, palette);
-    setHint("Sin conexión para el modelo: te muestro el análisis de color local.");
+    render(report, palette, modelError);
+    setHint("Análisis de color local (el modelo de prendas no cargó).");
   }finally{
     els.analyzeBtn.disabled = false;
     setTimeout(()=>els.progress.classList.remove('show'), 600);
@@ -634,14 +681,16 @@ async function loadClip(progress_callback){
 async function imageEmbed(c, imgUrl){
   const image  = await RawImage.read(imgUrl);
   const inputs = await c.processor(image);
-  const out    = await c.model.get_image_features(inputs);   // Tensor [1, D]
-  return normVec(Array.from(out.data));
+  const out    = await c.model.get_image_features(inputs);
+  const t = out && out.data ? out : (out.image_embeds || out.pooler_output || out);
+  return normVec(Array.from(t.data));
 }
 
 async function textEmbeds(c, prompts){
   const tok = c.tokenizer(prompts, { padding:true, truncation:true });
-  const out = await c.model.get_text_features(tok);           // Tensor [N, D]
-  const N = out.dims[0], D = out.dims[1], arr = Array.from(out.data), vecs = [];
+  const out = await c.model.get_text_features(tok);
+  const t = out && out.data ? out : (out.text_embeds || out);
+  const N = t.dims[0], D = t.dims[1], arr = Array.from(t.data), vecs = [];
   for(let i=0;i<N;i++) vecs.push(normVec(arr.slice(i*D, (i+1)*D)));
   return vecs;
 }
@@ -888,14 +937,27 @@ function buildReport(palette, garments, cRes, occasionTarget=null, occasionEs=nu
 }
 
 /* ---------- render ---------- */
-function render(r, palette){
+function render(r, palette, modelError){
   els.scoreNum.textContent = r.finalScore;
   els.verdict.textContent = r.verdict;
   els.verdictSub.textContent = r.verdictSub;
   els.harmonyTag.textContent = "Armonía · " + r.harmonyType;
   els.harmonyNote.innerHTML = "<b>" + r.harmonyType + ".</b> " + r.harmonyNote;
-  els.formalityRead.textContent = r.hadModel ? r.registroEs : "n/d";
-  els.coordRead.textContent = r.hadModel ? r.coordWord : "solo color";
+  els.formalityRead.textContent = r.hadModel ? r.registroEs : "—";
+  els.coordRead.textContent = r.hadModel ? r.coordWord : "—";
+
+  // banner: explain the color-only mode (this is what "n/d" used to mean)
+  if(!r.hadModel){
+    els.banner.style.display = "block";
+    els.banner.innerHTML = "<b>Modo solo color.</b> No se pudo cargar el modelo de prendas, "
+      + "así que no hay lectura de registro ni de prendas; te muestro solo el análisis de paleta. "
+      + "Suele pasar sin conexión o si abrís el archivo localmente: probá desde el sitio publicado "
+      + "(vestiqok.netlify.app) con internet."
+      + (modelError ? `<br><span class="berr">Detalle técnico: ${modelError}</span>` : "");
+  } else {
+    els.banner.style.display = "none";
+  }
+
   renderGarments(r.garments, r.outlierCats);
 
   // swatches sized by share
@@ -933,7 +995,12 @@ function render(r, palette){
 /* ---------- garment inventory render ---------- */
 function renderGarments(g, outlierCats){
   els.garments.innerHTML="";
-  if(!g){ els.garments.style.display="none"; return; }
+  if(!g){
+    els.garments.style.display="none";
+    if(els.gtitle) els.gtitle.style.display="none";
+    return;
+  }
+  if(els.gtitle) els.gtitle.style.display="block";
   els.garments.style.display="grid";
   const flagged = new Set(outlierCats || []);
   const zonas={top:"Arriba",bottom:"Abajo",footwear:"Pies"};
@@ -946,6 +1013,133 @@ function renderGarments(g, outlierCats){
     div.innerHTML=`<div class="gk">${zonas[cat]}</div><div class="gv">${ok?item.es:'no claro'}</div>`+
                   (isFlag?'<div class="gflag">cambiar</div>':'');
     els.garments.appendChild(div);
+  });
+}
+
+/* ---------- v3: color por prenda (segmentación de ropa, bajo demanda) ---------- */
+const SEG_ID = 'Xenova/segformer_b0_clothes';
+const SEG_MAP = {
+  'Upper-clothes': { slot:'top',    es:'Arriba' },
+  'Dress':         { slot:'top',    es:'Arriba' },
+  'Pants':         { slot:'bottom', es:'Abajo'  },
+  'Skirt':         { slot:'bottom', es:'Abajo'  },
+  'Left-shoe':     { slot:'feet',   es:'Pies'   },
+  'Right-shoe':    { slot:'feet',   es:'Pies'   },
+};
+
+function maskToCanvas(mask){
+  const { width, height, data, channels } = mask;
+  const cv = document.createElement('canvas'); cv.width = width; cv.height = height;
+  const id = new ImageData(width, height);
+  const ch = channels || 1;
+  for(let i=0;i<width*height;i++){
+    const v = data[i*ch];
+    id.data[i*4]=v; id.data[i*4+1]=v; id.data[i*4+2]=v; id.data[i*4+3]=255;
+  }
+  cv.getContext('2d').putImageData(id,0,0);
+  return cv;
+}
+
+async function garmentColors(imgUrl){
+  const out = await segmenter(imgUrl);           // [{label, mask: RawImage}]
+  const W=140, H=190;
+  const sc=document.createElement('canvas'); sc.width=W; sc.height=H;
+  sc.getContext('2d').drawImage(els.work,0,0,W,H);
+  const src=sc.getContext('2d').getImageData(0,0,W,H).data;
+
+  const acc={}; // slot -> { es, buckets:Map, n }
+  for(const s of out){
+    const m=SEG_MAP[s.label]; if(!m) continue;
+    const mc=document.createElement('canvas'); mc.width=W; mc.height=H;
+    mc.getContext('2d').drawImage(maskToCanvas(s.mask),0,0,W,H);
+    const md=mc.getContext('2d').getImageData(0,0,W,H).data;
+    if(!acc[m.slot]) acc[m.slot]={ es:m.es, buckets:new Map(), n:0 };
+    const A=acc[m.slot];
+    for(let i=0;i<W*H;i++){
+      if(md[i*4] > 127){
+        const r=src[i*4], g=src[i*4+1], b=src[i*4+2];
+        const q=`${r>>5},${g>>5},${b>>5}`;
+        const cur=A.buckets.get(q)||{r:0,g:0,b:0,n:0};
+        cur.r+=r; cur.g+=g; cur.b+=b; cur.n++; A.buckets.set(q,cur); A.n++;
+      }
+    }
+  }
+
+  const res=[];
+  for(const slot of ['top','bottom','feet']){
+    const A=acc[slot]; if(!A || A.n < W*H*0.008) continue;   // ignore tiny/absent regions
+    let best=null; for(const v of A.buckets.values()) if(!best || v.n>best.n) best=v;
+    const r=best.r/best.n, g=best.g/best.n, b=best.b/best.n;
+    const hsl=rgbToHsl(r,g,b);
+    res.push({ slot, es:A.es, hex:rgbToHex(r,g,b), h:hsl.h, s:hsl.s, l:hsl.l,
+               neutral:isNeutral(hsl), name:colorName(hsl) });
+  }
+  return res;
+}
+
+function renderPerGarment(colors){
+  const box=els.perGarment; box.innerHTML="";
+  box.style.display="block";
+  if(!colors.length){
+    box.innerHTML='<p class="pg-empty">No pude separar las prendas en esta foto. Probá una de cuerpo entero, de frente, con fondo liso.</p>';
+    return;
+  }
+  const grid=document.createElement('div'); grid.className='pg-grid';
+  colors.forEach(c=>{
+    const d=document.createElement('div'); d.className='pg-item';
+    d.innerHTML=`<div class="pg-chip" style="background:${c.hex}"></div>`+
+                `<div class="pg-k">${c.es}</div>`+
+                `<div class="pg-v">${cap(c.name)} · ${c.hex.toUpperCase()}</div>`;
+    grid.appendChild(d);
+  });
+  box.appendChild(grid);
+
+  // clash detection BETWEEN specific garments (the whole point of v3)
+  const chro=colors.filter(c=>!c.neutral);
+  const notes=[];
+  for(let i=0;i<chro.length;i++) for(let j=i+1;j<chro.length;j++){
+    const d=hueDist(chro[i].h, chro[j].h);
+    if(chro[i].s>0.4 && chro[j].s>0.4 && d>=70 && d<=150){
+      notes.push(`Tu ${chro[i].name} (${chro[i].es.toLowerCase()}) y tu ${chro[j].name} (${chro[j].es.toLowerCase()}) compiten: pasá una de las dos a un neutro, o dejala como accesorio chico.`);
+    }
+  }
+  const head=document.createElement('p'); head.className='pg-note';
+  head.innerHTML = notes.length
+    ? '<b>Choques entre prendas:</b>'
+    : '<b>Sin choques entre prendas.</b> Los colores de tus prendas conviven bien.';
+  box.appendChild(head);
+  notes.forEach(n=>{ const p=document.createElement('p'); p.className='pg-clash'; p.textContent=n; box.appendChild(p); });
+}
+
+if(els.perGarmentBtn){
+  els.perGarmentBtn.addEventListener('click', async ()=>{
+    if(!lastImgUrl){ return; }
+    els.perGarmentBtn.disabled=true;
+    els.progress.classList.add('show'); setProg(10, "Cargando segmentación (1ra vez)…");
+    try{
+      if(!segmenter){
+        segmenter = await pipeline('image-segmentation', SEG_ID, {
+          progress_callback:(d)=>{
+            if(d.status==='progress' && d.total){
+              const pct=10+Math.round((d.loaded/d.total)*58);
+              setProg(Math.min(pct,68), `Descargando segmentación · ${Math.round(d.progress||0)}%`);
+            }
+          }
+        });
+      }
+      setProg(85, "Separando prendas…");
+      const colors=await garmentColors(lastImgUrl);
+      setProg(100, "Listo");
+      renderPerGarment(colors);
+      els.perGarment.scrollIntoView({behavior:'smooth', block:'nearest'});
+    }catch(e){
+      console.error(e);
+      els.perGarment.style.display="block";
+      els.perGarment.innerHTML='<p class="pg-empty">No se pudo cargar el modelo de segmentación. Necesita conexión y suele andar mejor desde el sitio publicado.</p>';
+    }finally{
+      els.perGarmentBtn.disabled=false;
+      setTimeout(()=>els.progress.classList.remove('show'), 500);
+    }
   });
 }
 
