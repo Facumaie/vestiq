@@ -329,8 +329,10 @@
 
   <div class="controls">
     <button class="btn ghost" id="liveBtn"><span class="ic">◉</span> Cámara en vivo</button>
-    <button class="btn ghost" id="fileBtn"><span class="ic">▣</span> Tomar / subir foto</button>
-    <input type="file" id="fileInput" accept="image/*">
+    <button class="btn ghost" id="shootBtn"><span class="ic">▣</span> Tomar foto</button>
+    <button class="btn ghost" id="uploadBtn"><span class="ic">▤</span> Subir foto</button>
+    <input type="file" id="cameraInput" accept="image/*" capture="environment">
+    <input type="file" id="galleryInput" accept="image/*">
     <button class="btn primary" id="analyzeBtn" disabled>Analizar mi look</button>
   </div>
 
@@ -413,8 +415,10 @@ const els = {
   photo: document.getElementById('photo'),
   hint: document.getElementById('hint'),
   liveBtn: document.getElementById('liveBtn'),
-  fileBtn: document.getElementById('fileBtn'),
-  fileInput: document.getElementById('fileInput'),
+  shootBtn: document.getElementById('shootBtn'),
+  uploadBtn: document.getElementById('uploadBtn'),
+  cameraInput: document.getElementById('cameraInput'),
+  galleryInput: document.getElementById('galleryInput'),
   analyzeBtn: document.getElementById('analyzeBtn'),
   progress: document.getElementById('progress'),
   barFill: document.getElementById('barFill'),
@@ -517,7 +521,7 @@ function buildOccasions(){
 /* ---------- camera ---------- */
 els.liveBtn.addEventListener('click', async () => {
   if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) || !window.isSecureContext){
-    setHint("La cámara en vivo necesita HTTPS. Usá «Tomar / subir foto».");
+    setHint("La cámara en vivo necesita HTTPS. Usá «Tomar foto» o «Subir foto».");
     return;
   }
   try{
@@ -525,13 +529,14 @@ els.liveBtn.addEventListener('click', async () => {
     stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'user', width:{ideal:1280}, height:{ideal:1280} }, audio:false });
     els.video.srcObject = stream;
     show('video');
-    els.fileBtn.textContent = '';
+    els.shootBtn.style.display = 'none';
+    els.uploadBtn.style.display = 'none';
     els.liveBtn.innerHTML = '<span class="ic">◎</span> Capturar';
     els.liveBtn.classList.add('primary'); els.liveBtn.classList.remove('ghost');
     els.liveBtn.onclick = captureFromVideo;
     setHint("Posá de cuerpo entero y tocá «Capturar».");
   }catch(e){
-    setHint("No se pudo abrir la cámara. Probá «Tomar / subir foto».");
+    setHint("No se pudo abrir la cámara. Probá «Tomar foto» o «Subir foto».");
   }
 });
 
@@ -541,6 +546,8 @@ function captureFromVideo(){
   drawToWork(v, v.videoWidth, v.videoHeight);
   freezeShot();
   stopStream();
+  els.shootBtn.style.display = '';
+  els.uploadBtn.style.display = '';
   els.liveBtn.innerHTML = '<span class="ic">◉</span> Cámara en vivo';
   els.liveBtn.classList.remove('primary'); els.liveBtn.classList.add('ghost');
   els.liveBtn.onclick = null;
@@ -548,8 +555,10 @@ function captureFromVideo(){
 }
 function reLive(){ location.reload(); }
 
-els.fileBtn.addEventListener('click', () => els.fileInput.click());
-els.fileInput.addEventListener('change', (e) => {
+els.shootBtn.addEventListener('click', () => els.cameraInput.click());
+els.uploadBtn.addEventListener('click', () => els.galleryInput.click());
+
+function handlePickedFile(e){
   const f = e.target.files && e.target.files[0];
   if (!f) return;
   const url = URL.createObjectURL(f);
@@ -561,7 +570,10 @@ els.fileInput.addEventListener('change', (e) => {
     stopStream();
   };
   img.src = url;
-});
+  e.target.value = '';   // permite volver a elegir la misma foto
+}
+els.cameraInput.addEventListener('change', handlePickedFile);
+els.galleryInput.addEventListener('change', handlePickedFile);
 
 function drawToWork(src, sw, sh){
   // downscale longest side to ~768 for speed; keep aspect
@@ -719,20 +731,40 @@ function extractPalette(srcCanvas){
   const c=document.createElement('canvas'); c.width=w; c.height=h;
   const ctx=c.getContext('2d'); ctx.drawImage(srcCanvas,0,0,w,h);
   const data=ctx.getImageData(0,0,w,h).data;
-  const buckets=new Map();
   const cx=w/2, cy=h/2;
-  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
-    const i=(y*w+x)*4;
-    if(data[i+3]<200) continue;
-    const r=data[i],g=data[i+1],b=data[i+2];
-    const dx=Math.abs(x-cx)/cx, dy=Math.abs(y-cy)/cy;
-    const wgt=1+(1-dx)*1.6+(1-dy)*0.4; // favor horizontal center (the body)
-    const q=24;
-    const key=`${Math.round(r/q)*q},${Math.round(g/q)*q},${Math.round(b/q)*q}`;
-    const cur=buckets.get(key)||{r:0,g:0,b:0,w:0};
-    cur.r+=r*wgt; cur.g+=g*wgt; cur.b+=b*wgt; cur.w+=wgt;
-    buckets.set(key,cur);
+  const marginX=Math.round(w*0.10), marginY=Math.round(h*0.08); // borde exterior = fondo
+
+  // Arma los buckets de color. skinFilter=true descarta pixeles tono piel.
+  function buildBuckets(skinFilter){
+    const buckets=new Map();
+    let kept=0, considered=0;
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+      const i=(y*w+x)*4;
+      if(data[i+3]<200) continue;
+      // descarta el anillo exterior: casi siempre es fondo (pared, cielo, piso)
+      if(x<marginX || x>=w-marginX || y<marginY || y>=h-marginY) continue;
+      considered++;
+      const r=data[i],g=data[i+1],b=data[i+2];
+      if(skinFilter && isSkin(r,g,b)) continue; // saca cara, cuello, brazos, manos
+      kept++;
+      const dx=Math.abs(x-cx)/cx, dy=Math.abs(y-cy)/cy;
+      const wgt=1+(1-dx)*1.6+(1-dy)*1.0; // foco en el torso (banda central)
+      const q=24;
+      const key=`${Math.round(r/q)*q},${Math.round(g/q)*q},${Math.round(b/q)*q}`;
+      const cur=buckets.get(key)||{r:0,g:0,b:0,w:0};
+      cur.r+=r*wgt; cur.g+=g*wgt; cur.b+=b*wgt; cur.w+=wgt;
+      buckets.set(key,cur);
+    }
+    return {buckets, kept, considered};
   }
+
+  // El filtro de piel es agresivo: si borra casi todo (outfit beige/nude o un
+  // recorte muy cerrado de cara), rearma la paleta sin filtro de piel.
+  let {buckets, kept, considered} = buildBuckets(true);
+  if(considered>0 && kept/considered < 0.12){
+    ({buckets} = buildBuckets(false));
+  }
+
   let arr=[...buckets.values()].map(o=>({r:o.r/o.w,g:o.g/o.w,b:o.b/o.w,weight:o.w}));
   arr.sort((a,b)=>b.weight-a.weight);
   const merged=[];
@@ -759,6 +791,19 @@ function extractPalette(srcCanvas){
       name:colorName(hsl),
     };
   });
+}
+
+// Detector de piel heurístico: banda YCbCr + tope de saturación para no comerse
+// ropa viva (rojos/naranjas saturados). Los umbrales son fáciles de ajustar.
+function isSkin(r,g,b){
+  const cb = 128 - 0.168736*r - 0.331264*g + 0.5*b;
+  const cr = 128 + 0.5*r - 0.418688*g - 0.081312*b;
+  if(cr < 135 || cr > 178 || cb < 77 || cb > 128) return false;
+  const mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+  const sat = mx===0 ? 0 : (mx-mn)/mx;
+  if(sat > 0.62) return false;          // ropa saturada no es piel
+  if(mx < 40 || mn > 230) return false; // ignora casi-negro y casi-blanco
+  return true;
 }
 
 /* ---------- rule engine ---------- */
